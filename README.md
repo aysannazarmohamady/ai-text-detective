@@ -242,7 +242,7 @@ python -c "from src.predictor import TextPredictor; print('Predictor working')"
 
 ## Contact
 
-For questions, suggestions, or collaboration opportunities, please open an issue on GitHub.
+For questions, suggestions, or collaboration opportunities, please open an issue on GitHub or contact me aysan.nazarmohamady@yahoo.com
 
 ---
 
