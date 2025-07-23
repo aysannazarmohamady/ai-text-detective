@@ -134,6 +134,9 @@ print(f"AI Probability: {result['ai_probability']:.3f}")
 - **Model Selection**: Choose between different trained models
 - **Responsive Design**: Modern, professional UI
 
+  <img width="1908" height="922" alt="image" src="https://github.com/user-attachments/assets/666c4803-b848-4168-9715-09c6b95667ef" />
+
+
 ## Configuration
 
 Model parameters and training settings can be adjusted in `src/config.py`:
