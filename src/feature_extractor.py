@@ -1,173 +1,204 @@
-import pandas as pd
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-import textstat
-import nltk
-from nltk.sentiment import SentimentIntensityAnalyzer
-from typing import List, Tuple, Optional
+import joblib
+import os
+from typing import Dict, Optional, List
 from .config import Config
 
 try:
-    from transformers import AutoTokenizer, AutoModel
-    import torch
-    TRANSFORMERS_AVAILABLE = True
+    import shap
+    SHAP_AVAILABLE = True
 except ImportError:
-    TRANSFORMERS_AVAILABLE = False
-
-nltk.download('vader_lexicon', quiet=True)
-nltk.download('punkt', quiet=True)
+    SHAP_AVAILABLE = False
 
 
-class LinguisticFeatureExtractor:
-    def __init__(self):
-        self.sia = SentimentIntensityAnalyzer()
-    
-    def extract_readability_features(self, text: str) -> dict:
-        return {
-            'flesch_kincaid_grade': textstat.flesch_kincaid_grade(text),
-            'flesch_reading_ease': textstat.flesch_reading_ease(text),
-            'automated_readability_index': textstat.automated_readability_index(text),
-            'coleman_liau_index': textstat.coleman_liau_index(text)
-        }
-    
-    def extract_structural_features(self, text: str) -> dict:
-        sentences = nltk.sent_tokenize(text)
-        words = nltk.word_tokenize(text)
-        
-        return {
-            'char_count': len(text),
-            'word_count': len(words),
-            'sentence_count': len(sentences),
-            'avg_word_length': np.mean([len(word) for word in words]),
-            'avg_sentence_length': len(words) / len(sentences) if sentences else 0,
-            'punctuation_ratio': sum(c in '.,!?;:' for c in text) / len(text)
-        }
-    
-    def extract_sentiment_features(self, text: str) -> dict:
-        scores = self.sia.polarity_scores(text)
-        return {
-            'sentiment_compound': scores['compound'],
-            'sentiment_positive': scores['pos'],
-            'sentiment_negative': scores['neg'],
-            'sentiment_neutral': scores['neu']
-        }
-    
-    def extract_all_features(self, text: str) -> dict:
-        features = {}
-        features.update(self.extract_readability_features(text))
-        features.update(self.extract_structural_features(text))
-        features.update(self.extract_sentiment_features(text))
-        return features
-
-
-class TfidfFeatureExtractor:
-    def __init__(self, config: Optional[Config] = None):
+class TextPredictor:
+    def __init__(self, model_name: str = "ensemble", config: Optional[Config] = None):
         self.config = config or Config()
-        self.vectorizer = None
-        self._is_fitted = False
-    
-    def fit(self, texts: List[str]) -> 'TfidfFeatureExtractor':
-        self.vectorizer = TfidfVectorizer(
-            max_features=self.config.FEATURES.max_features_tfidf,
-            ngram_range=self.config.FEATURES.ngram_range,
-            min_df=self.config.FEATURES.min_df,
-            max_df=self.config.FEATURES.max_df,
-            stop_words='english'
-        )
-        self.vectorizer.fit(texts)
-        self._is_fitted = True
-        return self
-    
-    def transform(self, texts: List[str]) -> np.ndarray:
-        if not self._is_fitted:
-            raise ValueError("TfidfFeatureExtractor must be fitted first")
-        return self.vectorizer.transform(texts).toarray()
-    
-    def fit_transform(self, texts: List[str]) -> np.ndarray:
-        return self.fit(texts).transform(texts)
-
-
-class BertFeatureExtractor:
-    def __init__(self, config: Optional[Config] = None):
-        if not TRANSFORMERS_AVAILABLE:
-            raise ImportError("transformers and torch are required for BERT features")
-        
-        self.config = config or Config()
-        self.tokenizer = None
+        self.model_name = model_name
         self.model = None
+        self.feature_extractor = None
+        self.explainer = None
         self._is_loaded = False
     
     def load_model(self):
-        if not TRANSFORMERS_AVAILABLE:
-            raise ImportError("transformers not available")
-            
-        self.tokenizer = AutoTokenizer.from_pretrained(self.config.FEATURES.bert_model_name)
-        self.model = AutoModel.from_pretrained(self.config.FEATURES.bert_model_name)
-        self.model.eval()
+        model_path = os.path.join(self.config.MODELS_PATH, f"{self.model_name}_model.pkl")
+        extractor_path = os.path.join(self.config.MODELS_PATH, "feature_extractor.pkl")
+        
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        
+        if not os.path.exists(extractor_path):
+            raise FileNotFoundError(f"Feature extractor not found: {extractor_path}")
+        
+        self.model = joblib.load(model_path)
+        self.feature_extractor = joblib.load(extractor_path)
         self._is_loaded = True
     
-    def extract_embeddings(self, texts: List[str], batch_size: int = 8) -> np.ndarray:
-        if not TRANSFORMERS_AVAILABLE:
-            raise ImportError("transformers not available")
+    def setup_explainer(self, background_texts: List[str]):
+        if not SHAP_AVAILABLE:
+            print("Warning: SHAP not available. Explanations will be limited.")
+            return
             
         if not self._is_loaded:
             self.load_model()
         
-        embeddings = []
+        background_features, _ = self.feature_extractor.extract_features(background_texts)
+        self.explainer = shap.Explainer(self.model, background_features)
+    
+    def predict(self, text: str) -> Dict:
+        if not self._is_loaded:
+            self.load_model()
         
-        with torch.no_grad():
-            for i in range(0, len(texts), batch_size):
-                batch_texts = texts[i:i+batch_size]
-                encoded = self.tokenizer(
-                    batch_texts,
-                    truncation=True,
-                    padding=True,
-                    max_length=self.config.FEATURES.max_sequence_length,
-                    return_tensors='pt'
-                )
-                
-                outputs = self.model(**encoded)
-                batch_embeddings = outputs.last_hidden_state.mean(dim=1)
-                embeddings.append(batch_embeddings.numpy())
+        features, feature_names = self.feature_extractor.extract_features([text])
         
-        return np.vstack(embeddings)
+        prediction = self.model.predict(features)[0]
+        probability = self.model.predict_proba(features)[0]
+        
+        return {
+            'text': text,
+            'prediction': int(prediction),
+            'prediction_label': 'AI Generated' if prediction == 1 else 'Human Written',
+            'ai_probability': float(probability[1]),
+            'human_probability': float(probability[0]),
+            'confidence': float(max(probability))
+        }
+    
+    def predict_batch(self, texts: List[str]) -> List[Dict]:
+        if not self._is_loaded:
+            self.load_model()
+        
+        features, _ = self.feature_extractor.extract_features(texts)
+        
+        predictions = self.model.predict(features)
+        probabilities = self.model.predict_proba(features)
+        
+        results = []
+        for i, text in enumerate(texts):
+            results.append({
+                'text': text,
+                'prediction': int(predictions[i]),
+                'prediction_label': 'AI Generated' if predictions[i] == 1 else 'Human Written',
+                'ai_probability': float(probabilities[i][1]),
+                'human_probability': float(probabilities[i][0]),
+                'confidence': float(max(probabilities[i]))
+            })
+        
+        return results
+    
+    def explain_prediction(self, text: str, background_texts: Optional[List[str]] = None) -> Dict:
+        if not SHAP_AVAILABLE:
+            prediction_result = self.predict(text)
+            return {
+                'prediction': prediction_result,
+                'feature_importance': [],
+                'explanation_summary': 'SHAP explanations not available. Install shap package for detailed analysis.'
+            }
+            
+        if self.explainer is None and background_texts is not None:
+            self.setup_explainer(background_texts)
+        
+        if self.explainer is None:
+            return {'error': 'Explainer not set up. Provide background_texts parameter.'}
+        
+        features, feature_names = self.feature_extractor.extract_features([text])
+        shap_values = self.explainer(features)
+        
+        prediction_result = self.predict(text)
+        
+        feature_importance = []
+        for i, (name, value, shap_val) in enumerate(zip(feature_names, features[0], shap_values.values[0])):
+            if abs(shap_val) > 0.001:
+                feature_importance.append({
+                    'feature_name': name,
+                    'feature_value': float(value),
+                    'shap_value': float(shap_val),
+                    'importance': abs(float(shap_val))
+                })
+        
+        feature_importance.sort(key=lambda x: x['importance'], reverse=True)
+        
+        return {
+            'prediction': prediction_result,
+            'feature_importance': feature_importance[:10],
+            'explanation_summary': self._generate_explanation_summary(feature_importance[:5])
+        }
+    
+    def _generate_explanation_summary(self, top_features: List[Dict]) -> str:
+        if not top_features:
+            return "Unable to generate explanation."
+        
+        prediction_type = "AI-generated" if top_features[0]['shap_value'] > 0 else "human-written"
+        
+        key_factors = []
+        for feature in top_features[:3]:
+            feature_name = feature['feature_name']
+            if 'readability' in feature_name.lower():
+                key_factors.append("text readability patterns")
+            elif 'sentiment' in feature_name.lower():
+                key_factors.append("sentiment characteristics")
+            elif 'length' in feature_name.lower():
+                key_factors.append("text length patterns")
+            elif 'tfidf' in feature_name.lower():
+                key_factors.append("vocabulary usage")
+            else:
+                key_factors.append("linguistic patterns")
+        
+        factors_text = ", ".join(key_factors[:2])
+        return f"Text classified as {prediction_type} based on {factors_text}."
 
 
-class FeatureExtractor:
+class ModelComparator:
     def __init__(self, config: Optional[Config] = None):
         self.config = config or Config()
-        self.linguistic_extractor = LinguisticFeatureExtractor()
-        self.tfidf_extractor = TfidfFeatureExtractor(config)
+        self.models = {}
+        self.predictors = {}
+    
+    def load_all_models(self):
+        available_models = ['logistic', 'xgboost', 'ensemble']
         
-        if TRANSFORMERS_AVAILABLE:
-            self.bert_extractor = BertFeatureExtractor(config)
+        for model_name in available_models:
+            try:
+                predictor = TextPredictor(model_name, self.config)
+                predictor.load_model()
+                self.predictors[model_name] = predictor
+            except FileNotFoundError:
+                print(f"Model {model_name} not found, skipping...")
+    
+    def compare_predictions(self, text: str) -> Dict:
+        if not self.predictors:
+            self.load_all_models()
+        
+        results = {}
+        for model_name, predictor in self.predictors.items():
+            results[model_name] = predictor.predict(text)
+        
+        return results
+    
+    def get_consensus_prediction(self, text: str) -> Dict:
+        predictions = self.compare_predictions(text)
+        
+        ai_probabilities = [pred['ai_probability'] for pred in predictions.values()]
+        avg_ai_prob = np.mean(ai_probabilities)
+        
+        consensus_pred = 1 if avg_ai_prob > 0.5 else 0
+        consensus_label = 'AI Generated' if consensus_pred == 1 else 'Human Written'
+        
+        return {
+            'text': text,
+            'consensus_prediction': consensus_pred,
+            'consensus_label': consensus_label,
+            'average_ai_probability': float(avg_ai_prob),
+            'individual_predictions': predictions,
+            'agreement_level': self._calculate_agreement(predictions)
+        }
+    
+    def _calculate_agreement(self, predictions: Dict) -> str:
+        pred_values = [pred['prediction'] for pred in predictions.values()]
+        agreement_ratio = pred_values.count(pred_values[0]) / len(pred_values)
+        
+        if agreement_ratio == 1.0:
+            return "Full Agreement"
+        elif agreement_ratio >= 0.67:
+            return "Majority Agreement"
         else:
-            self.bert_extractor = None
-        
-    def extract_features(self, texts: List[str], include_bert: bool = False) -> Tuple[np.ndarray, List[str]]:
-        linguistic_features = []
-        feature_names = []
-        
-        for text in texts:
-            features = self.linguistic_extractor.extract_all_features(text)
-            linguistic_features.append(list(features.values()))
-            if not feature_names:
-                feature_names.extend(features.keys())
-        
-        linguistic_array = np.array(linguistic_features)
-        
-        tfidf_features = self.tfidf_extractor.fit_transform(texts)
-        tfidf_names = [f"tfidf_{i}" for i in range(tfidf_features.shape[1])]
-        feature_names.extend(tfidf_names)
-        
-        combined_features = np.hstack([linguistic_array, tfidf_features])
-        
-        if include_bert and TRANSFORMERS_AVAILABLE and self.bert_extractor:
-            bert_features = self.bert_extractor.extract_embeddings(texts)
-            bert_names = [f"bert_{i}" for i in range(bert_features.shape[1])]
-            feature_names.extend(bert_names)
-            combined_features = np.hstack([combined_features, bert_features])
-        elif include_bert:
-            print("Warning: BERT features requested but transformers not available")
-        
-        return combined_features, feature_names
+            return "Low Agreement"
