@@ -6,6 +6,9 @@ Advanced machine learning system for detecting AI-generated text using linguisti
 
 This project implements a sophisticated text classification pipeline that distinguishes between human-written and AI-generated content. Using a combination of traditional NLP features and modern machine learning algorithms, the system achieves high accuracy while providing interpretable results through an interactive web interface.
 
+<img width="1785" height="822" alt="image" src="https://github.com/user-attachments/assets/bdc65fdc-d05b-4366-a848-2db7bc5ea656" />
+
+
 ## Features
 
 - **Multi-model ensemble approach** combining Logistic Regression, XGBoost, and ensemble methods
