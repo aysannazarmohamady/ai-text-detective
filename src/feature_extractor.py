@@ -1,13 +1,18 @@
 import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
-from transformers import AutoTokenizer, AutoModel
-import torch
 import textstat
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
 from typing import List, Tuple, Optional
 from .config import Config
+
+try:
+    from transformers import AutoTokenizer, AutoModel
+    import torch
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
 
 nltk.download('vader_lexicon', quiet=True)
 nltk.download('punkt', quiet=True)
@@ -84,18 +89,27 @@ class TfidfFeatureExtractor:
 
 class BertFeatureExtractor:
     def __init__(self, config: Optional[Config] = None):
+        if not TRANSFORMERS_AVAILABLE:
+            raise ImportError("transformers and torch are required for BERT features")
+        
         self.config = config or Config()
         self.tokenizer = None
         self.model = None
         self._is_loaded = False
     
     def load_model(self):
+        if not TRANSFORMERS_AVAILABLE:
+            raise ImportError("transformers not available")
+            
         self.tokenizer = AutoTokenizer.from_pretrained(self.config.FEATURES.bert_model_name)
         self.model = AutoModel.from_pretrained(self.config.FEATURES.bert_model_name)
         self.model.eval()
         self._is_loaded = True
     
     def extract_embeddings(self, texts: List[str], batch_size: int = 8) -> np.ndarray:
+        if not TRANSFORMERS_AVAILABLE:
+            raise ImportError("transformers not available")
+            
         if not self._is_loaded:
             self.load_model()
         
@@ -124,7 +138,11 @@ class FeatureExtractor:
         self.config = config or Config()
         self.linguistic_extractor = LinguisticFeatureExtractor()
         self.tfidf_extractor = TfidfFeatureExtractor(config)
-        self.bert_extractor = BertFeatureExtractor(config)
+        
+        if TRANSFORMERS_AVAILABLE:
+            self.bert_extractor = BertFeatureExtractor(config)
+        else:
+            self.bert_extractor = None
         
     def extract_features(self, texts: List[str], include_bert: bool = False) -> Tuple[np.ndarray, List[str]]:
         linguistic_features = []
@@ -144,10 +162,12 @@ class FeatureExtractor:
         
         combined_features = np.hstack([linguistic_array, tfidf_features])
         
-        if include_bert:
+        if include_bert and TRANSFORMERS_AVAILABLE and self.bert_extractor:
             bert_features = self.bert_extractor.extract_embeddings(texts)
             bert_names = [f"bert_{i}" for i in range(bert_features.shape[1])]
             feature_names.extend(bert_names)
             combined_features = np.hstack([combined_features, bert_features])
+        elif include_bert:
+            print("Warning: BERT features requested but transformers not available")
         
         return combined_features, feature_names
