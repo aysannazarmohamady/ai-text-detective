@@ -2,8 +2,13 @@ import numpy as np
 import joblib
 import os
 from typing import Dict, Optional, List
-import shap
 from .config import Config
+
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
 
 
 class TextPredictor:
@@ -30,6 +35,10 @@ class TextPredictor:
         self._is_loaded = True
     
     def setup_explainer(self, background_texts: List[str]):
+        if not SHAP_AVAILABLE:
+            print("Warning: SHAP not available. Explanations will be limited.")
+            return
+            
         if not self._is_loaded:
             self.load_model()
         
@@ -77,6 +86,14 @@ class TextPredictor:
         return results
     
     def explain_prediction(self, text: str, background_texts: Optional[List[str]] = None) -> Dict:
+        if not SHAP_AVAILABLE:
+            prediction_result = self.predict(text)
+            return {
+                'prediction': prediction_result,
+                'feature_importance': [],
+                'explanation_summary': 'SHAP explanations not available. Install shap package for detailed analysis.'
+            }
+            
         if self.explainer is None and background_texts is not None:
             self.setup_explainer(background_texts)
         
